@@ -1,0 +1,133 @@
+import requests
+import pandas as pd
+from datetime import datetime
+import time
+
+# Настройки
+CLIENT_ID = "ваш_client_id"  # Замените на ваш Client ID
+API_KEY = "ваш_api_key"   # Замените на ваш API-ключ
+BASE_URL = "https://api-seller.ozon.ru"
+
+# Заголовки для запросов
+headers = {
+    "Client-Id": CLIENT_ID,
+    "Api-Key": API_KEY,
+    "Content-Type": "application/json"
+}
+
+def get_sales_data(date_from, date_to):
+    """Получает данные о продажах через /v1/analytics/data"""
+    url = f"{BASE_URL}/v1/analytics/data"
+    payload = {
+        "date_from": date_from,
+        "date_to": date_to,
+        "metrics": [
+            "revenue",
+            "quantity",
+            "orders_count",
+            "product_id",
+            "sku_id"
+        ]
+    }
+    response = requests.post(url, headers=headers, json=payload)
+    if response.status_code == 200:
+        return response.json().get("result", [])
+    else:
+        print(f"Ошибка при получении данных о продажах: {response.status_code}")
+        print(response.text)
+        return []
+
+def get_product_info():
+    """Получает информацию о товарах через /v2/product/info/list"""
+    url = f"{BASE_URL}/v2/product/info/list"
+    payload = {"filter": {}, "limit": 1000}
+    all_products = []
+    while True:
+        response = requests.post(url, headers=headers, json=payload)
+        if response.status_code != 200:
+            print(f"Ошибка при получении информации о товарах: {response.status_code}")
+            break
+        data = response.json()
+        products = data.get("result", {}).get("items", [])
+        all_products.extend(products)
+        # Если есть следующий курсор, продолжаем загрузку
+        next_cursor = data.get("result", {}).get("next_cursor")
+        if next_cursor:
+            payload["cursor"] = next_cursor
+        else:
+            break
+        # Задержка для соблюдения лимитов API
+        time.sleep(1)
+    return all_products
+
+def validate_date(date_string):
+    """Проверяет корректность формата даты YYYY-MM-DD"""
+    try:
+        datetime.strptime(date_string, "%Y-%m-%d")
+        return True
+    except ValueError:
+        return False
+
+def get_user_dates():
+    """Запрашивает у пользователя даты и проверяет их"""
+    print("=== Выгрузка данных из Ozon Seller API ===")
+    print("Формат даты: ГГГГ-ММ-ДД (например: 2024-07-01)")
+
+    while True:
+        date_from = input("Введите дату начала периода (от): ").strip()
+        if validate_date(date_from):
+            break
+        else:
+            print("Неверный формат даты! Попробуйте ещё раз.")
+
+    while True:
+        date_to = input("Введите дату конца периода (до): ").strip()
+        if validate_date(date_to):
+            # Проверяем, что дата окончания не раньше даты начала
+            if datetime.strptime(date_to, "%Y-%m-%d") >= datetime.strptime(date_from, "%Y-%m-%d"):
+                break
+            else:
+                print("Дата окончания не может быть раньше даты начала! Попробуйте ещё раз.")
+        else:
+            print("Неверный формат даты! Попробуйте ещё раз.")
+
+    return date_from, date_to
+
+def main():
+    # Получаем даты от пользователя
+    date_from, date_to = get_user_dates()
+
+    print(f"\nЗапрашиваем данные за период с {date_from} по {date_to}...")
+
+    print("Получаем данные о продажах...")
+    sales_data = get_sales_data(date_from, date_to)
+
+    print("Получаем информацию о товарах...")
+    product_info = get_product_info()
+
+    # Создаём DataFrame для продаж
+    df_sales = pd.DataFrame(sales_data)
+
+    # Создаём словарь для быстрого поиска товаров по product_id
+    products_dict = {item["product_id"]: item for item in product_info}
+
+    # Добавляем артикулы продавца в данные о продажах
+    def get_seller_sku(product_id):
+        product = products_dict.get(product_id, {})
+        return product.get("offer_id", "Не найден")
+
+    df_sales["seller_sku"] = df_sales["product_id"].apply(get_seller_sku)
+
+    # Сохраняем в Excel
+    filename = f"ozon_sales_{date_from}_to_{date_to}.xlsx"
+    with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+        df_sales.to_excel(writer, sheet_name='Продажи', index=False)
+        # Дополнительно сохраняем информацию о товарах на отдельном листе
+        pd.DataFrame(product_info).to_excel(writer, sheet_name='Товары', index=False)
+
+    print(f"\n✅ Данные успешно выгружены в файл: {filename}")
+    print(f"   - Продажи: {len(sales_data)} записей")
+    print(f"   - Товары: {len(product_info)} записей")
+
+if __name__ == "__main__":
+    main()
